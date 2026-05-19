@@ -63,4 +63,3 @@ const form = useForm({ resolver: zodResolver(schema) })
 ## 경로 Alias
 
 `@/*` → `src/*` (tsconfig.json의 paths 설정)
----
