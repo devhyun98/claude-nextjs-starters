@@ -1,84 +1,75 @@
 #!/bin/bash
 # Claude Code Notification 훅 - 권한 요청 및 사용자 입력 대기 알림
-#
-# 이 스크립트는 Claude Code가 Notification 이벤트를 발생시킬 때 실행됩니다.
-# 주로 권한 요청이나 사용자 입력 대기 상황에서 Slack 알림을 보냅니다.
+# Python을 사용하여 UTF-8 인코딩 보장
 
-# UTF-8 로케일 + Python 인코딩 명시적 설정
-export LANG=en_US.UTF-8
-export LC_ALL=en_US.UTF-8
 export PYTHONIOENCODING=utf-8
 
-# CLAUDE_PROJECT_DIR 미설정 시 스크립트 위치로부터 상위 디렉토리 추정
-if [ -z "$CLAUDE_PROJECT_DIR" ]; then
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    CLAUDE_PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-fi
-
-# .env 파일에서 Slack 웹훅 URL 로드
 if [ -f "$CLAUDE_PROJECT_DIR/.env" ]; then
+    set -a
     source "$CLAUDE_PROJECT_DIR/.env"
+    set +a
 else
     echo "오류: .env 파일을 찾을 수 없습니다: $CLAUDE_PROJECT_DIR/.env" >&2
     exit 1
 fi
 
-# Slack 웹훅 URL 확인
 if [ -z "$SLACK_WEBHOOK_URL" ]; then
     echo "오류: SLACK_WEBHOOK_URL이 설정되지 않았습니다." >&2
     exit 1
 fi
 
-# 프로젝트명 추출
 PROJECT_NAME=$(basename "$CLAUDE_PROJECT_DIR")
-
-# 현재 시간
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
-# Python으로 전체 메시지와 JSON payload를 안전하게 생성
-# bash 이모지 처리 불안정성 제거, Python의 안정적 UTF-8 처리 사용
-PAYLOAD=$(python3 << 'PYTHON_EOF'
-import json
-import sys
-from datetime import datetime
+# stdin에서 JSON 읽어 message 추출
+INPUT=$(cat)
+MESSAGE=$(echo "$INPUT" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('message', ''))
+except:
+    print('')
+" 2>/dev/null || echo "")
 
-project_name = sys.argv[1]
-timestamp = sys.argv[2]
-
-text = f"""🔔 권한 요청 알림
-
-프로젝트: {project_name}
-상태: Notification
-시간: {timestamp}
-
-Claude Code에서 알림이 도착했습니다."""
-
-data = {
-    "channel": "#claude-code",
-    "username": "Claude Code",
-    "text": text,
-    "icon_emoji": ":bell:"
-}
-
-print(json.dumps(data, ensure_ascii=False))
-PYTHON_EOF
-"$PROJECT_NAME" "$TIMESTAMP")
-
+echo "DEBUG: MESSAGE = '$MESSAGE'" >&2
 echo "DEBUG: PROJECT_NAME = '$PROJECT_NAME'" >&2
 echo "DEBUG: TIMESTAMP = '$TIMESTAMP'" >&2
-echo "DEBUG: PAYLOAD = '$PAYLOAD'" >&2
 
-# Slack으로 알림 전송
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-  -X POST \
-  -H "Content-Type: application/json; charset=utf-8" \
-  --data-raw "$PAYLOAD" \
-  "$SLACK_WEBHOOK_URL")
+# Python으로 UTF-8 보장하여 Slack 전송
+PROJECT_NAME="$PROJECT_NAME" MESSAGE="$MESSAGE" TIMESTAMP="$TIMESTAMP" python3 << 'EOF'
+import sys, json, os
+from urllib import request, parse
 
-# 성공 여부 확인 (HTTP 200~299는 성공)
-if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-    echo "Slack 알림이 성공적으로 전송되었습니다. (HTTP $HTTP_CODE)" >&2
-else
-    echo "Slack 알림 전송에 실패했습니다. (HTTP $HTTP_CODE)" >&2
-    exit 1
-fi
+sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
+
+try:
+    webhook_url = os.environ['SLACK_WEBHOOK_URL']
+    project_name = os.environ.get('PROJECT_NAME', '')
+    message = os.environ.get('MESSAGE', '')
+    timestamp = os.environ.get('TIMESTAMP', '')
+
+    payload = {
+        'channel': '#claude-code',
+        'username': 'Claude Code',
+        'text': (
+            '🔔 권한 요청 알림\n\n'
+            '프로젝트: {}\n상태: {}\n시간: {}\n\n'
+            'Claude Code에서 알림이 도착했습니다.'
+        ).format(project_name, message, timestamp),
+        'icon_emoji': ':bell:'
+    }
+
+    body = parse.urlencode({'payload': json.dumps(payload, ensure_ascii=False)}).encode('utf-8')
+    req = request.Request(webhook_url, data=body, method='POST')
+    req.add_header('Content-Type', 'application/x-www-form-urlencoded; charset=utf-8')
+
+    with request.urlopen(req) as resp:
+        print("Slack 알림이 성공적으로 전송되었습니다." if resp.status == 200 else "Slack 알림 전송에 실패했습니다.", file=sys.stderr)
+        sys.exit(0 if resp.status == 200 else 1)
+except Exception as e:
+    print(f"Slack 알림 전송 중 오류 발생: {e}", file=sys.stderr)
+    sys.exit(1)
+EOF
+
+exit $?
