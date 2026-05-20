@@ -8,6 +8,12 @@
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
+# CLAUDE_PROJECT_DIR 미설정 시 스크립트 위치로부터 상위 디렉토리 추정
+if [ -z "$CLAUDE_PROJECT_DIR" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    CLAUDE_PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+fi
+
 # .env 파일에서 Slack 웹훅 URL 로드
 if [ -f "$CLAUDE_PROJECT_DIR/.env" ]; then
     source "$CLAUDE_PROJECT_DIR/.env"
@@ -39,13 +45,17 @@ echo "DEBUG: TIMESTAMP = '$TIMESTAMP'" >&2
 # 메시지 텍스트 생성
 TEXT=$(printf '✅ 작업 완료 알림\n\n프로젝트: %s\n상태: %s\n시간: %s\n\nClaude Code 작업이 완료되었습니다.' "$PROJECT_NAME" "$REASON" "$TIMESTAMP")
 
-# jq를 사용하여 안전한 JSON payload 생성 (한글/이모지/특수문자 안전 처리)
-PAYLOAD=$(jq -n \
-  --arg channel "#claude-code" \
-  --arg username "Claude Code" \
-  --arg text "$TEXT" \
-  --arg icon ":white_check_mark:" \
-  '{channel: $channel, username: $username, text: $text, icon_emoji: $icon}')
+# Python을 사용하여 안전한 JSON payload 생성 (한글/이모지/특수문자 안전 처리)
+PAYLOAD=$(python3 -c "
+import json, sys
+data = {
+    'channel': '#claude-code',
+    'username': 'Claude Code',
+    'text': sys.argv[1],
+    'icon_emoji': ':white_check_mark:'
+}
+print(json.dumps(data, ensure_ascii=False))
+" "$TEXT")
 
 echo "DEBUG: PAYLOAD = '$PAYLOAD'" >&2
 
