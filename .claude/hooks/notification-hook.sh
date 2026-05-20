@@ -4,9 +4,10 @@
 # 이 스크립트는 Claude Code가 Notification 이벤트를 발생시킬 때 실행됩니다.
 # 주로 권한 요청이나 사용자 입력 대기 상황에서 Slack 알림을 보냅니다.
 
-# UTF-8 로케일 명시적 설정 (한글/이모지 인코딩 문제 해결)
+# UTF-8 로케일 + Python 인코딩 명시적 설정
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
+export PYTHONIOENCODING=utf-8
 
 # CLAUDE_PROJECT_DIR 미설정 시 스크립트 위치로부터 상위 디렉토리 추정
 if [ -z "$CLAUDE_PROJECT_DIR" ]; then
@@ -28,40 +29,46 @@ if [ -z "$SLACK_WEBHOOK_URL" ]; then
     exit 1
 fi
 
-# JSON 입력에서 메시지 추출 (Python으로 처리, jq 의존성 제거)
-MESSAGE=$(echo "$HOOK_INPUT" | python3 -c "import json, sys; data = json.load(sys.stdin) if sys.stdin.read() else {}; print(data.get('message', '알림'))" 2>/dev/null || echo "알림")
-
 # 프로젝트명 추출
 PROJECT_NAME=$(basename "$CLAUDE_PROJECT_DIR")
 
 # 현재 시간
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
-# 디버깅을 위한 변수 출력 (stderr로 출력)
-echo "DEBUG: MESSAGE = '$MESSAGE'" >&2
+# Python으로 전체 메시지와 JSON payload를 안전하게 생성
+# bash 이모지 처리 불안정성 제거, Python의 안정적 UTF-8 처리 사용
+PAYLOAD=$(python3 << 'PYTHON_EOF'
+import json
+import sys
+from datetime import datetime
+
+project_name = sys.argv[1]
+timestamp = sys.argv[2]
+
+text = f"""🔔 권한 요청 알림
+
+프로젝트: {project_name}
+상태: Notification
+시간: {timestamp}
+
+Claude Code에서 알림이 도착했습니다."""
+
+data = {
+    "channel": "#claude-code",
+    "username": "Claude Code",
+    "text": text,
+    "icon_emoji": ":bell:"
+}
+
+print(json.dumps(data, ensure_ascii=False))
+PYTHON_EOF
+"$PROJECT_NAME" "$TIMESTAMP")
+
 echo "DEBUG: PROJECT_NAME = '$PROJECT_NAME'" >&2
 echo "DEBUG: TIMESTAMP = '$TIMESTAMP'" >&2
-
-# 메시지 텍스트 생성
-TEXT=$(printf '🔔 권한 요청 알림\n\n프로젝트: %s\n상태: %s\n시간: %s\n\nClaude Code에서 알림이 도착했습니다.' "$PROJECT_NAME" "$MESSAGE" "$TIMESTAMP")
-
-# Python을 사용하여 안전한 JSON payload 생성 (한글/이모지/특수문자 안전 처리)
-# PYTHONIOENCODING을 UTF-8로 설정하여 Windows cp949 인코딩 문제 해결
-PAYLOAD=$(PYTHONIOENCODING=utf-8 python3 -c "
-import json, sys, io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-data = {
-    'channel': '#claude-code',
-    'username': 'Claude Code',
-    'text': sys.argv[1],
-    'icon_emoji': ':bell:'
-}
-print(json.dumps(data, ensure_ascii=False))
-" "$TEXT")
-
 echo "DEBUG: PAYLOAD = '$PAYLOAD'" >&2
 
-# Slack으로 알림 전송 (현재 권장 방식: Content-Type: application/json)
+# Slack으로 알림 전송
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
   -X POST \
   -H "Content-Type: application/json; charset=utf-8" \
