@@ -28,8 +28,8 @@ if [ -z "$SLACK_WEBHOOK_URL" ]; then
     exit 1
 fi
 
-# JSON 입력에서 메시지 추출 (있는 경우)
-MESSAGE=$(echo "$HOOK_INPUT" | jq -r '.message // "알림"')
+# JSON 입력에서 메시지 추출 (Python으로 처리, jq 의존성 제거)
+MESSAGE=$(echo "$HOOK_INPUT" | python3 -c "import json, sys; data = json.load(sys.stdin) if sys.stdin.read() else {}; print(data.get('message', '알림'))" 2>/dev/null || echo "알림")
 
 # 프로젝트명 추출
 PROJECT_NAME=$(basename "$CLAUDE_PROJECT_DIR")
@@ -46,8 +46,10 @@ echo "DEBUG: TIMESTAMP = '$TIMESTAMP'" >&2
 TEXT=$(printf '🔔 권한 요청 알림\n\n프로젝트: %s\n상태: %s\n시간: %s\n\nClaude Code에서 알림이 도착했습니다.' "$PROJECT_NAME" "$MESSAGE" "$TIMESTAMP")
 
 # Python을 사용하여 안전한 JSON payload 생성 (한글/이모지/특수문자 안전 처리)
-PAYLOAD=$(python3 -c "
-import json, sys
+# PYTHONIOENCODING을 UTF-8로 설정하여 Windows cp949 인코딩 문제 해결
+PAYLOAD=$(PYTHONIOENCODING=utf-8 python3 -c "
+import json, sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 data = {
     'channel': '#claude-code',
     'username': 'Claude Code',

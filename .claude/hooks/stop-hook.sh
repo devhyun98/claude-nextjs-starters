@@ -34,8 +34,8 @@ PROJECT_NAME=$(basename "$CLAUDE_PROJECT_DIR")
 # 현재 시간
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
-# JSON 입력에서 정보 추출 (있는 경우)
-REASON=$(echo "$HOOK_INPUT" | jq -r '.hook_event_name // "Stop"')
+# JSON 입력에서 정보 추출 (Python으로 처리, jq 의존성 제거)
+REASON=$(echo "$HOOK_INPUT" | python3 -c "import json, sys; data = json.load(sys.stdin) if sys.stdin.read() else {}; print(data.get('hook_event_name', 'Stop'))" 2>/dev/null || echo "Stop")
 
 # 디버깅을 위한 변수 출력 (stderr로 출력)
 echo "DEBUG: REASON = '$REASON'" >&2
@@ -46,8 +46,10 @@ echo "DEBUG: TIMESTAMP = '$TIMESTAMP'" >&2
 TEXT=$(printf '✅ 작업 완료 알림\n\n프로젝트: %s\n상태: %s\n시간: %s\n\nClaude Code 작업이 완료되었습니다.' "$PROJECT_NAME" "$REASON" "$TIMESTAMP")
 
 # Python을 사용하여 안전한 JSON payload 생성 (한글/이모지/특수문자 안전 처리)
-PAYLOAD=$(python3 -c "
-import json, sys
+# PYTHONIOENCODING을 UTF-8로 설정하여 Windows cp949 인코딩 문제 해결
+PAYLOAD=$(PYTHONIOENCODING=utf-8 python3 -c "
+import json, sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 data = {
     'channel': '#claude-code',
     'username': 'Claude Code',
